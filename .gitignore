@@ -1,2 +1,13 @@
 .ipynb_checkpoints/
 *.pyc
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.tar.gz
+*.egg-info/
+dist/
+build/
+venv/
+.env
+

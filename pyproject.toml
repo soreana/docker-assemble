@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docker-assemble"
+version = "0.1.0"
+description = "A CLI tool to extract and analyze Docker images"
+readme = "README.md"
+authors = [{ name = "Sina Kashipazha"}]
+license = { text = "Apache-2.0" }
+requires-python = ">=3.8"
+dependencies = [
+  "docker>=6.0.0"
+]
+
+[project.scripts]
+docker-assemble = "docker_assemble.main:run"
