@@ -138,11 +138,11 @@ def create_new_image(output_dir, new_image_name):
                             continue
 
             tar_buffer.seek(0)
-            return tar_buffer
+            return tar_buffer.getvalue()
 
     tar_stream = generate_tar(output_dir)
     try:
-        response = client.images.build(fileobj=tar_stream, tag=new_image_name, rm=True)
+        response = client.images.build(fileobj=io.BytesIO(tar_stream), tag=new_image_name, rm=True)
         logging.info(f"New image created: {new_image_name}")
     except docker.errors.BuildError as e:
         logging.error(f"Failed to build image: {e}")
