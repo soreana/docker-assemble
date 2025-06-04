@@ -32,9 +32,10 @@ def run():
     if args.maximum_file_size:
         max_size_bytes = parse_size(args.maximum_file_size)
         large_files = image_exporter.check_large_files(args.output_dir, max_size_bytes)
+        removed_files = []
 
         if large_files:
-            image_exporter.remove_files(large_files)
+            removed_files = image_exporter.remove_files(large_files)
 
         if args.new_image_name:
-            image_exporter.create_new_image(args.image, args.new_image_name, large_files)
+            image_exporter.create_new_image(args.image, args.new_image_name, removed_files)

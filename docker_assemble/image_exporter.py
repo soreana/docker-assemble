@@ -84,8 +84,9 @@ def check_large_files(output_dir, max_size_bytes):
             file_path = Path(root) / file
             try:
                 file_size = os.path.getsize(file_path)
+                rel_path = file_path.relative_to(output_dir)
                 if file_size > max_size_bytes:
-                    large_files.append((file_path, file_size))
+                    large_files.append((rel_path, file_size))
             except FileNotFoundError:
                 logging.debug(f"File not found: {file_path}")
             except OSError as e:
@@ -93,8 +94,8 @@ def check_large_files(output_dir, max_size_bytes):
 
     if large_files:
         logging.warning("The following files exceed the maximum file size:")
-        for path, size in large_files:
-            logging.warning(f"- {path}: {size} bytes")
+        for idx, (path, size) in enumerate(large_files):
+            logging.warning(f"{idx}: {path}: {size} bytes")
     else:
         logging.info("No files exceed the maximum file size.")
 
@@ -110,25 +111,24 @@ def remove_files(large_files):
 
         try:
             indices = [int(i) for i in indices_str.split(',')]
-            files_to_remove = [large_files[i][0] for i in indices]
+            removed_files = [large_files[i][0] for i in indices]
 
             print("Files to be removed:")
-            for file in files_to_remove:
+            for file in removed_files:
                 print(file)
 
             confirmation = input("Are you sure you want to delete these files? (yes/no): ")
             if confirmation.lower() == 'yes':
-                for file in files_to_remove:
-                    os.remove(file)
+                for file in removed_files:
                     logging.info(f"Removed file: {file}")
-                break
+                return removed_files;
             else:
                 print("Removal cancelled.")
         except (ValueError, IndexError) as e:
             print(f"Invalid input: {e}")
 
 
-def filter_tar_member(member, large_files):
+def filter_tar_member(member, removed_files):
     blocked_prefixes = [
         "proc/",
         "sys/",
@@ -148,7 +148,7 @@ def filter_tar_member(member, large_files):
             return False
 
     # Filter large files
-    if member.isfile() and any(Path(member.name) == Path(f[0].name) for f in large_files):
+    if member.isfile() and any(Path(member.name) == f[0] for f in removed_files):
         logging.info(f"Skipping large file: {member.name} ({member.size} bytes)")
         return False
 
@@ -178,7 +178,7 @@ def filter_tar_and_inject_dockerfile(original_tar_path, dockerfile_content, filt
     return buffer
 
 
-def create_new_image(image_name, new_image_name, large_files):
+def create_new_image(image_name, new_image_name, removed_files):
     container = None
     tmp_tar_path = None
     try:
@@ -197,7 +197,7 @@ def create_new_image(image_name, new_image_name, large_files):
         filtered_tar_stream = filter_tar_and_inject_dockerfile(
             tmp_tar_path,
             dockerfile_content,
-            lambda member: filter_tar_member(member, large_files)
+            lambda member: filter_tar_member(member, removed_files)
         )
 
         # Build Docker image directly from filtered tar stream
