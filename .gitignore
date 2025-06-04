@@ -10,4 +10,5 @@ dist/
 build/
 venv/
 .env
+.idea
 

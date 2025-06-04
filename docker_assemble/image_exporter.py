@@ -2,9 +2,9 @@ import docker
 import tarfile
 import tempfile
 import os
-import shutil
 from pathlib import Path
 import logging
+import io
 
 def extract_image(image_name: str, output_dir: str):
     client = docker.from_env()
@@ -64,5 +64,74 @@ def extract_tar_safely(tar_path: str, output_path: Path):
 
     logging.info(f"Extraction completed to: {output_path}")
 
+def check_large_files(output_dir, max_size_bytes):
+    logging.info(f"Checking for files larger than {max_size_bytes} bytes.")
+    large_files = []
+    for root, _, files in os.walk(output_dir):
+        for file in files:
+            file_path = Path(root) / file
+            file_size = os.path.getsize(file_path)
+            if file_size > max_size_bytes:
+                large_files.append((file_path, file_size))
 
+    if large_files:
+        logging.warning("The following files exceed the maximum file size:")
+        for path, size in large_files:
+            logging.warning(f"- {path}: {size} bytes")
+    else:
+        logging.info("No files exceed the maximum file size.")
 
+    return large_files
+
+def remove_files(large_files):
+    while True:
+        indices_str = input("Enter the indices of files to remove (comma-separated, or 'no' to skip): ")
+        if indices_str.lower() == 'no':
+            logging.info("No files will be removed.")
+            break
+
+        try:
+            indices = [int(i) for i in indices_str.split(',')]
+            files_to_remove = [large_files[i][0] for i in indices]
+
+            print("Files to be removed:")
+            for file in files_to_remove:
+                print(file)
+
+            confirmation = input("Are you sure you want to delete these files? (yes/no): ")
+            if confirmation.lower() == 'yes':
+                for file in files_to_remove:
+                    os.remove(file)
+                    logging.info(f"Removed file: {file}")
+                break
+            else:
+                print("Removal cancelled.")
+        except (ValueError, IndexError) as e:
+            print(f"Invalid input: {e}")
+
+def create_new_image(output_dir, new_image_name):
+    client = docker.from_env()
+    logging.info(f"Creating new image from directory: {output_dir}")
+
+    def generate_tar(directory):
+        with io.BytesIO() as tar_buffer:
+            with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+                for root, _, files in os.walk(directory):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        rel_path = os.path.relpath(file_path, directory)
+                        tarinfo = tarfile.TarInfo(name=rel_path)
+                        tarinfo.size = os.path.getsize(file_path)
+                        with open(file_path, 'rb') as f:
+                            tar.addfile(tarinfo, fileobj=f)
+
+            tar_buffer.seek(0)
+            return tar_buffer
+
+    tar_stream = generate_tar(output_dir)
+    try:
+        response = client.images.build(fileobj=tar_stream, tag=new_image_name, rm=True)
+        logging.info(f"New image created: {new_image_name}")
+    except docker.errors.BuildError as e:
+        logging.error(f"Failed to build image: {e}")
+        raise
