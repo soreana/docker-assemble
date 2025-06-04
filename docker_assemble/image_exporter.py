@@ -116,34 +116,51 @@ def remove_files(large_files):
 
 def create_new_image(output_dir, new_image_name):
     client = docker.from_env()
-    logging.info(f"Creating new image from directory: {output_dir}")
+    logging.info(f"Creating new image {new_image_name} from directory: {output_dir}")
 
-    def generate_tar(directory):
-        with io.BytesIO() as tar_buffer:
-            with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+    # Create a temporary Dockerfile
+    dockerfile_content = f"""
+    FROM scratch
+    COPY . /
+    """
+    with tempfile.TemporaryDirectory() as build_context:
+        dockerfile_path = Path(build_context) / 'Dockerfile'
+        with open(dockerfile_path, 'w') as f:
+            f.write(dockerfile_content)
+
+        # Create a tar archive of the output directory
+        def generate_tar(directory):
+            tar_buffer = io.BytesIO()
+            with tarfile.open(fileobj=tar_buffer, mode='w:gz') as tar:
                 for root, _, files in os.walk(directory):
                     for file in files:
                         file_path = os.path.join(root, file)
                         rel_path = os.path.relpath(file_path, directory)
-                        tarinfo = tarfile.TarInfo(name=rel_path)
                         try:
-                            tarinfo.size = os.path.getsize(file_path)
-                            with open(file_path, 'rb') as f:
-                                tar.addfile(tarinfo, fileobj=f)
+                            tar.add(file_path, arcname=rel_path)
                         except FileNotFoundError:
                             logging.error(f"File not found while creating tar: {file_path}")
-                            continue  # Skip this file and continue with the next
-                        except Exception as e:
-                            logging.error(f"Error adding {file_path} to tar: {e}")
                             continue
-
+                        except Exception as err:
+                            logging.error(f"Error adding {file_path} to tar: {err}")
+                            continue
             tar_buffer.seek(0)
-            return tar_buffer.getvalue()
+            return tar_buffer
 
-    tar_stream = generate_tar(output_dir)
-    try:
-        response = client.images.build(fileobj=io.BytesIO(tar_stream), tag=new_image_name, rm=True)
-        logging.info(f"New image created: {new_image_name}")
-    except docker.errors.BuildError as e:
-        logging.error(f"Failed to build image: {e}")
-        raise
+        tar_stream = generate_tar(output_dir)
+
+        try:
+            response = client.images.build(
+                path=build_context,
+                dockerfile='Dockerfile',
+                fileobj=tar_stream,
+                tag=new_image_name,
+                rm=True
+            )
+            for line in response:
+                logging.info(line)
+            logging.info(f"New image created: {new_image_name}")
+
+        except docker.errors.BuildError as e:
+            logging.error(f"Failed to build image: {e}")
+            raise
