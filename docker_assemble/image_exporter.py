@@ -70,9 +70,14 @@ def check_large_files(output_dir, max_size_bytes):
     for root, _, files in os.walk(output_dir):
         for file in files:
             file_path = Path(root) / file
-            file_size = os.path.getsize(file_path)
-            if file_size > max_size_bytes:
-                large_files.append((file_path, file_size))
+            try:
+                file_size = os.path.getsize(file_path)
+                if file_size > max_size_bytes:
+                    large_files.append((file_path, file_size))
+            except FileNotFoundError:
+                logging.error(f"File not found: {file_path}")
+            except OSError as e:
+                logging.error(f"OS error while getting size of {file_path}: {e}")
 
     if large_files:
         logging.warning("The following files exceed the maximum file size:")
