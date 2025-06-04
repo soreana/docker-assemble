@@ -31,6 +31,8 @@ def get_or_pull_image_and_export_fs(client, image_name):
 
 
 def extract_image(image_name: str, output_dir: str):
+    container = None
+    tmp_tar_path = None
     try:
         client = docker.from_env()
         container, tmp_tar_path = get_or_pull_image_and_export_fs(client, image_name)
@@ -177,6 +179,8 @@ def filter_tar_and_inject_dockerfile(original_tar_path, dockerfile_content, filt
 
 
 def create_new_image(image_name, new_image_name, large_files):
+    container = None
+    tmp_tar_path = None
     try:
         logging.info(f"Creating new image '{new_image_name}' from '{image_name}' with filtered files.")
         client = docker.from_env()
