@@ -132,6 +132,8 @@ def create_new_image(output_dir, new_image_name):
         def generate_tar(directory):
             tar_buffer = io.BytesIO()
             with tarfile.open(fileobj=tar_buffer, mode='w:gz') as tar:
+                tar.add(dockerfile_path, arcname='Dockerfile')
+
                 for root, _, files in os.walk(directory):
                     for file in files:
                         file_path = os.path.join(root, file)
@@ -144,6 +146,7 @@ def create_new_image(output_dir, new_image_name):
                         except Exception as e:
                             logging.error(f"Error adding {file_path} to tar: {e}")
                             continue
+
             tar_buffer.seek(0)
             return tar_buffer.getvalue()
 
@@ -152,10 +155,9 @@ def create_new_image(output_dir, new_image_name):
         try:
             with open(dockerfile_path, 'rb') as df:
                 response = client.images.build(
-                    path=build_context,
-                    dockerfile='Dockerfile',
                     fileobj=io.BytesIO(tar_stream),
                     tag=new_image_name,
+                    custom_context=True,
                     rm=True
                 )
                 for line in response:
