@@ -186,7 +186,7 @@ def create_new_image(image_name, new_image_name, large_files):
         client = docker.from_env()
         container, tmp_tar_path = get_or_pull_image_and_export_fs(client, image_name)
 
-        logging.info(f"Extraction complete. Archive saved at {tmp_tar_path}")
+        logging.debug(f"Extraction complete. Archive saved at {tmp_tar_path}")
 
         dockerfile_content = f"""
             FROM scratch
