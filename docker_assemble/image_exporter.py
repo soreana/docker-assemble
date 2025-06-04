@@ -2,7 +2,6 @@ import docker
 import tarfile
 import tempfile
 import os
-import shutil
 from pathlib import Path
 import logging
 import io
@@ -132,7 +131,9 @@ def create_new_image(output_dir, new_image_name):
         # Create a tar archive of the output directory
         def generate_tar(directory):
             tar_buffer = io.BytesIO()
-            with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+            with tarfile.open(fileobj=tar_buffer, mode='w:gz') as tar:
+                tar.add(dockerfile_path, arcname='Dockerfile')
+
                 for root, _, files in os.walk(directory):
                     for file in files:
                         file_path = os.path.join(root, file)
@@ -149,24 +150,19 @@ def create_new_image(output_dir, new_image_name):
             tar_buffer.seek(0)
             return tar_buffer.getvalue()
 
-        for item in os.listdir(output_dir):
-            s = os.path.join(output_dir, item)
-            d = os.path.join(build_context, item)
-            if os.path.isdir(s):
-                shutil.copytree(s, d, symlinks=True, ignore=None, dirs_exist_ok=True)
-            else:
-                shutil.copy2(s, d, follow_symlinks=True)
+        tar_stream = generate_tar(output_dir)
 
         try:
-            response = client.images.build(
-                path=build_context,
-                dockerfile='Dockerfile',
-                tag=new_image_name,
-                rm=True
-            )
-            for line in response:
-                logging.info(line)
-            logging.info(f"New image created: {new_image_name}")
+            with open(dockerfile_path, 'rb') as df:
+                response = client.images.build(
+                    fileobj=io.BytesIO(tar_stream),
+                    tag=new_image_name,
+                    custom_context=True,
+                    rm=True
+                )
+                for line in response:
+                    logging.info(line)
+                logging.info(f"New image created: {new_image_name}")
 
         except docker.errors.BuildError as e:
             logging.error(f"Failed to build image: {e}")
