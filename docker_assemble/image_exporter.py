@@ -9,11 +9,11 @@ import io
 
 def get_or_pull_image_and_export_fs(client, image_name):
     try:
-        image = client.images.get(image_name)
+        client.images.get(image_name)
         logging.info(f"Image '{image_name}' found locally.")
     except docker.errors.ImageNotFound:
         logging.info(f"Image '{image_name}' not found locally. Pulling...")
-        image = client.images.pull(image_name)
+        client.images.pull(image_name)
 
     container = client.containers.run(image=image_name, command="sleep infinity", detach=True)
     logging.debug(f"Created temporary container: {container.id[:12]}")
