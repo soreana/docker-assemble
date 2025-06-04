@@ -131,7 +131,7 @@ def create_new_image(output_dir, new_image_name):
         # Create a tar archive of the output directory
         def generate_tar(directory):
             tar_buffer = io.BytesIO()
-            with tarfile.open(fileobj=tar_buffer, mode='w:gz') as tar:
+            with tarfile.open(fileobj=tar_buffer, mode='w:gz', compresslevel=9) as tar:
                 tar.add(dockerfile_path, arcname='Dockerfile')
 
                 for root, _, files in os.walk(directory):
