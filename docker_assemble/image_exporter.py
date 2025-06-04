@@ -111,7 +111,7 @@ def remove_files(large_files):
 
         try:
             indices = [int(i) for i in indices_str.split(',')]
-            removed_files = [large_files[i][0] for i in indices]
+            removed_files = [Path("/" + str(large_files[i][0])) for i in indices]
 
             print("Files to be removed:")
             for file in removed_files:
@@ -129,26 +129,8 @@ def remove_files(large_files):
 
 
 def filter_tar_member(member, removed_files):
-    blocked_prefixes = [
-        "proc/",
-        "sys/",
-        "dev/",
-        "run/",
-        "tmp/",
-        "var/cache/",
-        "var/log/",
-        "usr/share/doc/",
-        "usr/share/man/",
-        "usr/share/locale/"
-    ]
-
-    for prefix in blocked_prefixes:
-        if member.name.startswith(prefix):
-            logging.info(f"Skipping blocked path: {member.name}")
-            return False
-
-    # Filter large files
-    if member.isfile() and any(Path(member.name) == f[0] for f in removed_files):
+    # Filter removed files
+    if member.isfile() and any(Path(member.name) == f for f in removed_files):
         logging.info(f"Skipping large file: {member.name} ({member.size} bytes)")
         return False
 
