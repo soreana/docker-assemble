@@ -141,25 +141,26 @@ def create_new_image(output_dir, new_image_name):
                         except FileNotFoundError:
                             logging.error(f"File not found while creating tar: {file_path}")
                             continue
-                        except Exception as err:
-                            logging.error(f"Error adding {file_path} to tar: {err}")
+                        except Exception as e:
+                            logging.error(f"Error adding {file_path} to tar: {e}")
                             continue
             tar_buffer.seek(0)
-            return tar_buffer
+            return tar_buffer.getvalue()
 
         tar_stream = generate_tar(output_dir)
 
         try:
-            response = client.images.build(
-                path=build_context,
-                dockerfile='Dockerfile',
-                fileobj=tar_stream,
-                tag=new_image_name,
-                rm=True
-            )
-            for line in response:
-                logging.info(line)
-            logging.info(f"New image created: {new_image_name}")
+            with open(dockerfile_path, 'rb') as df:
+                response = client.images.build(
+                    path=build_context,
+                    dockerfile='Dockerfile',
+                    fileobj=io.BytesIO(tar_stream),
+                    tag=new_image_name,
+                    rm=True
+                )
+                for line in response:
+                    logging.info(line)
+                logging.info(f"New image created: {new_image_name}")
 
         except docker.errors.BuildError as e:
             logging.error(f"Failed to build image: {e}")
