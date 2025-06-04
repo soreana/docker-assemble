@@ -87,9 +87,9 @@ def check_large_files(output_dir, max_size_bytes):
                 if file_size > max_size_bytes:
                     large_files.append((file_path, file_size))
             except FileNotFoundError:
-                logging.error(f"File not found: {file_path}")
+                logging.debug(f"File not found: {file_path}")
             except OSError as e:
-                logging.error(f"OS error while getting size of {file_path}: {e}")
+                logging.debug(f"OS error while getting size of {file_path}: {e}")
 
     if large_files:
         logging.warning("The following files exceed the maximum file size:")
@@ -209,7 +209,7 @@ def create_new_image(image_name, new_image_name, large_files):
         )
 
         for line in logs:
-            logging.info(line)
+            logging.debug(line)
 
         logging.info(f"New image successfully created: {new_image_name}")
 
