@@ -6,6 +6,7 @@ from pathlib import Path
 import logging
 import io
 
+
 def extract_image(image_name: str, output_dir: str):
     client = docker.from_env()
 
@@ -64,6 +65,7 @@ def extract_tar_safely(tar_path: str, output_path: Path):
 
     logging.info(f"Extraction completed to: {output_path}")
 
+
 def check_large_files(output_dir, max_size_bytes):
     logging.info(f"Checking for files larger than {max_size_bytes} bytes.")
     large_files = []
@@ -87,6 +89,7 @@ def check_large_files(output_dir, max_size_bytes):
         logging.info("No files exceed the maximum file size.")
 
     return large_files
+
 
 def remove_files(large_files):
     while True:
@@ -114,56 +117,93 @@ def remove_files(large_files):
         except (ValueError, IndexError) as e:
             print(f"Invalid input: {e}")
 
-def create_new_image(output_dir, new_image_name):
+def filter_tar_member(member, large_files):
+    blocked_prefixes = [
+        "proc/",
+        "sys/",
+        "dev/",
+        "run/",
+        "tmp/",
+        "var/cache/",
+        "var/log/",
+        "usr/share/doc/",
+        "usr/share/man/",
+        "usr/share/locale/"
+    ]
+
+    for prefix in blocked_prefixes:
+        if member.name.startswith(prefix):
+            logging.info(f"Skipping blocked path: {member.name}")
+            return False
+
+    # Filter large files
+    if member.isfile() and any(Path(member.name) == Path(f[0].name) for f in large_files) :
+        logging.info(f"Skipping large file: {member.name} ({member.size} bytes)")
+        return False
+
+    return True
+
+
+# Rebuild tar stream while filtering and injecting Dockerfile
+def filter_tar_and_inject_dockerfile(original_tar_path, dockerfile_content, filter_callback):
+    buffer = io.BytesIO()
+
+    with tarfile.open(original_tar_path, "r") as old_tar:
+        with tarfile.open(fileobj=buffer, mode="w:gz") as new_tar:
+            for member in old_tar.getmembers():
+                if not filter_callback(member):
+                    continue
+
+                file_obj = old_tar.extractfile(member) if member.isfile() else None
+                new_tar.addfile(member, file_obj)
+
+            # Inject Dockerfile
+            dockerfile_data = dockerfile_content.encode("utf-8")
+            docker_info = tarfile.TarInfo(name="Dockerfile")
+            docker_info.size = len(dockerfile_data)
+            new_tar.addfile(docker_info, io.BytesIO(dockerfile_data))
+
+    buffer.seek(0)
+    return buffer
+
+
+def create_new_image(image_name, new_image_name, large_files):
     client = docker.from_env()
-    logging.info(f"Creating new image {new_image_name} from directory: {output_dir}")
+    logging.info(f"Extracting from Docker image '{image_name}'...")
 
-    # Create a temporary Dockerfile
+    container = client.containers.create(image=image_name, command="sleep infinity")
+    stream, _ = container.get_archive("/")
+    container.remove(force=True)
+
+    # Save tar to temp file (still no extraction yet)
+    with tempfile.NamedTemporaryFile(delete=False) as tmp_tar:
+        for chunk in stream:
+            tmp_tar.write(chunk)
+        tmp_tar_path = tmp_tar.name
+
+    logging.info(f"Extraction complete. Archive saved at {tmp_tar_path}")
+
     dockerfile_content = f"""
-    FROM scratch
-    COPY . /
-    """
-    with tempfile.TemporaryDirectory() as build_context:
-        dockerfile_path = Path(build_context) / 'Dockerfile'
-        with open(dockerfile_path, 'w') as f:
-            f.write(dockerfile_content)
+        FROM scratch
+        COPY . /
+        """
 
-        # Create a tar archive of the output directory
-        def generate_tar(directory):
-            tar_buffer = io.BytesIO()
-            with tarfile.open(fileobj=tar_buffer, mode='w:gz', compresslevel=9) as tar:
-                tar.add(dockerfile_path, arcname='Dockerfile')
+    # Build filtered tar stream
+    filtered_tar_stream = filter_tar_and_inject_dockerfile(
+        tmp_tar_path,
+        dockerfile_content,
+        lambda member: filter_tar_member(member, large_files)
+    )
 
-                for root, _, files in os.walk(directory):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        rel_path = os.path.relpath(file_path, directory)
-                        try:
-                            tar.add(file_path, arcname=rel_path)
-                        except FileNotFoundError:
-                            logging.error(f"File not found while creating tar: {file_path}")
-                            continue
-                        except Exception as e:
-                            logging.error(f"Error adding {file_path} to tar: {e}")
-                            continue
+    # Build Docker image directly from filtered tar stream
+    image, logs = client.images.build(
+        fileobj=filtered_tar_stream,
+        tag=new_image_name,
+        rm=True,
+        custom_context=True
+    )
 
-            tar_buffer.seek(0)
-            return tar_buffer.getvalue()
+    for line in logs:
+        logging.info(line)
 
-        tar_stream = generate_tar(output_dir)
-
-        try:
-            with open(dockerfile_path, 'rb') as df:
-                response = client.images.build(
-                    fileobj=io.BytesIO(tar_stream),
-                    tag=new_image_name,
-                    custom_context=True,
-                    rm=True
-                )
-                for line in response:
-                    logging.info(line)
-                logging.info(f"New image created: {new_image_name}")
-
-        except docker.errors.BuildError as e:
-            logging.error(f"Failed to build image: {e}")
-            raise
+    logging.info(f"New image successfully created: {new_image_name}")

@@ -37,4 +37,4 @@ def run():
             image_exporter.remove_files(large_files)
 
         if args.new_image_name:
-            image_exporter.create_new_image(args.output_dir, args.new_image_name)
+            image_exporter.create_new_image(args.output_dir, args.new_image_name, large_files)
