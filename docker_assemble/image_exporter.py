@@ -7,9 +7,7 @@ import logging
 import io
 
 
-def extract_image(image_name: str, output_dir: str):
-    client = docker.from_env()
-
+def get_or_pull_image_and_export_fs(client, image_name):
     try:
         image = client.images.get(image_name)
         logging.info(f"Image '{image_name}' found locally.")
@@ -26,6 +24,16 @@ def extract_image(image_name: str, output_dir: str):
         with open(tmp_tar_path, "wb") as f:
             for chunk in stream:
                 f.write(chunk)
+        return container, tmp_tar_path
+    except Exception as e:
+        container.remove(force=True)
+        raise e
+
+
+def extract_image(image_name: str, output_dir: str):
+    try:
+        client = docker.from_env()
+        container, tmp_tar_path = get_or_pull_image_and_export_fs(client, image_name)
 
         logging.debug(f"Filesystem archive saved to: {tmp_tar_path}")
 
@@ -117,6 +125,7 @@ def remove_files(large_files):
         except (ValueError, IndexError) as e:
             print(f"Invalid input: {e}")
 
+
 def filter_tar_member(member, large_files):
     blocked_prefixes = [
         "proc/",
@@ -137,7 +146,7 @@ def filter_tar_member(member, large_files):
             return False
 
     # Filter large files
-    if member.isfile() and any(Path(member.name) == Path(f[0].name) for f in large_files) :
+    if member.isfile() and any(Path(member.name) == Path(f[0].name) for f in large_files):
         logging.info(f"Skipping large file: {member.name} ({member.size} bytes)")
         return False
 
@@ -168,42 +177,40 @@ def filter_tar_and_inject_dockerfile(original_tar_path, dockerfile_content, filt
 
 
 def create_new_image(image_name, new_image_name, large_files):
-    client = docker.from_env()
-    logging.info(f"Extracting from Docker image '{image_name}'...")
+    try:
+        logging.info(f"Creating new image '{new_image_name}' from '{image_name}' with filtered files.")
+        client = docker.from_env()
+        container, tmp_tar_path = get_or_pull_image_and_export_fs(client, image_name)
 
-    container = client.containers.create(image=image_name, command="sleep infinity")
-    stream, _ = container.get_archive("/")
-    container.remove(force=True)
+        logging.info(f"Extraction complete. Archive saved at {tmp_tar_path}")
 
-    # Save tar to temp file (still no extraction yet)
-    with tempfile.NamedTemporaryFile(delete=False) as tmp_tar:
-        for chunk in stream:
-            tmp_tar.write(chunk)
-        tmp_tar_path = tmp_tar.name
+        dockerfile_content = f"""
+            FROM scratch
+            COPY . /
+            """
 
-    logging.info(f"Extraction complete. Archive saved at {tmp_tar_path}")
+        # Build filtered tar stream
+        filtered_tar_stream = filter_tar_and_inject_dockerfile(
+            tmp_tar_path,
+            dockerfile_content,
+            lambda member: filter_tar_member(member, large_files)
+        )
 
-    dockerfile_content = f"""
-        FROM scratch
-        COPY . /
-        """
+        # Build Docker image directly from filtered tar stream
+        image, logs = client.images.build(
+            fileobj=filtered_tar_stream,
+            tag=new_image_name,
+            rm=True,
+            custom_context=True
+        )
 
-    # Build filtered tar stream
-    filtered_tar_stream = filter_tar_and_inject_dockerfile(
-        tmp_tar_path,
-        dockerfile_content,
-        lambda member: filter_tar_member(member, large_files)
-    )
+        for line in logs:
+            logging.info(line)
 
-    # Build Docker image directly from filtered tar stream
-    image, logs = client.images.build(
-        fileobj=filtered_tar_stream,
-        tag=new_image_name,
-        rm=True,
-        custom_context=True
-    )
+        logging.info(f"New image successfully created: {new_image_name}")
 
-    for line in logs:
-        logging.info(line)
-
-    logging.info(f"New image successfully created: {new_image_name}")
+    finally:
+        container.remove(force=True)
+        if os.path.exists(tmp_tar_path):
+            os.remove(tmp_tar_path)
+        logging.debug("Cleaned up temporary container and tar file.")
