@@ -126,9 +126,16 @@ def create_new_image(output_dir, new_image_name):
                         file_path = os.path.join(root, file)
                         rel_path = os.path.relpath(file_path, directory)
                         tarinfo = tarfile.TarInfo(name=rel_path)
-                        tarinfo.size = os.path.getsize(file_path)
-                        with open(file_path, 'rb') as f:
-                            tar.addfile(tarinfo, fileobj=f)
+                        try:
+                            tarinfo.size = os.path.getsize(file_path)
+                            with open(file_path, 'rb') as f:
+                                tar.addfile(tarinfo, fileobj=f)
+                        except FileNotFoundError:
+                            logging.error(f"File not found while creating tar: {file_path}")
+                            continue  # Skip this file and continue with the next
+                        except Exception as e:
+                            logging.error(f"Error adding {file_path} to tar: {e}")
+                            continue
 
             tar_buffer.seek(0)
             return tar_buffer
