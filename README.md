@@ -77,15 +77,24 @@ docker-assemble -d python:3.11 output_dir --maximum-file-size 500M
 docker-assemble -d node:20 output_dir --maximum-file-size 1G
 ```
 
-## Rebuild a filtered Docker image
+## Rebuild a Docker image
 
-After detecting large files, `docker-assemble` can ask which files should be removed and then build a new Docker image:
+Pass `--new-image-name` to rebuild the extracted filesystem as a single-layer image (`FROM scratch` + `COPY . /`). `--maximum-file-size` is optional:
 
-```bash
-docker-assemble -d ubuntu:20.04 output_dir \
-  --maximum-file-size 100M \
-  --new-image-name ubuntu-optimized
-```
+- **Without `--maximum-file-size`** — no files are filtered out. The new image contains the same content as the original, just consolidated into one layer. Useful for comparing a multi-layer original against a squashed single-layer version without conflating filtering effects.
+
+  ```bash
+  docker-assemble -d ubuntu:20.04 output_dir \
+    --new-image-name ubuntu-squashed
+  ```
+
+- **With `--maximum-file-size`** — `docker-assemble` lists files above the threshold, asks which should be removed, and rebuilds the image without them:
+
+  ```bash
+  docker-assemble -d ubuntu:20.04 output_dir \
+    --maximum-file-size 100M \
+    --new-image-name ubuntu-optimized
+  ```
 
 ## Package
 

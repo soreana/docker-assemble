@@ -29,13 +29,13 @@ def run():
     logging.debug(f"Extracting image: {args.image} to directory: {args.output_dir}")
     image_exporter.extract_image(image_name=args.image, output_dir=args.output_dir)
 
+    removed_files = []
     if args.maximum_file_size:
         max_size_bytes = parse_size(args.maximum_file_size)
         large_files = image_exporter.check_large_files(args.output_dir, max_size_bytes)
-        removed_files = []
 
         if large_files:
             removed_files = image_exporter.remove_files(large_files)
 
-        if args.new_image_name:
-            image_exporter.create_new_image(args.image, args.new_image_name, removed_files)
+    if args.new_image_name:
+        image_exporter.create_new_image(args.image, args.new_image_name, removed_files)
