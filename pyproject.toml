@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "docker-assemble"
-description = "A CLI tool to extract and analyze Docker images"
+description = "CLI tool for extracting Docker image filesystems, inspecting large files, and rebuilding optimized Docker images."
 readme = "README.md"
 authors = [{ name = "Sina" }]
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 requires-python = ">=3.8"
 dependencies = [
   "docker>=6.0.0"
@@ -16,6 +16,12 @@ dependencies = [
 
 dynamic = ["version"]
 
+
+[project.urls]
+Homepage = "https://github.com/soreana/docker-assemble"
+Repository = "https://github.com/soreana/docker-assemble"
+Issues = "https://github.com/soreana/docker-assemble/issues"
+PyPI = "https://pypi.org/project/docker-assemble/"
 
 [project.scripts]
 docker-assemble = "docker_assemble.main:run"
