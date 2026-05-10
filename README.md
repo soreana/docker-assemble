@@ -39,6 +39,43 @@ Install from PyPI:
 pip install docker-assemble
 ```
 
+### System-wide installation (all users)
+
+To make `docker-assemble` available to every user on a shared machine, install it outside any single user's home directory.
+
+#### Option 1 — Dedicated venv in `/opt` + symlink
+
+Works on any system with Python 3.8+ and avoids conflicts with OS-managed Python packages:
+
+```bash
+sudo python3 -m venv /opt/docker-assemble
+sudo /opt/docker-assemble/bin/pip install docker-assemble
+sudo ln -s /opt/docker-assemble/bin/docker-assemble /usr/local/bin/docker-assemble
+```
+
+Any user with `/usr/local/bin` on their `PATH` can now run `docker-assemble`. To upgrade later:
+
+```bash
+sudo /opt/docker-assemble/bin/pip install -U docker-assemble
+```
+
+#### Option 2 — pipx (global)
+
+With `pipx` 1.5 or newer:
+
+```bash
+sudo pipx install docker-assemble
+```
+
+On Ubuntu 24.04 (which ships pipx 1.4.3, predating `--global`), use environment variables instead:
+
+```bash
+sudo apt install pipx
+sudo PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install docker-assemble
+```
+
+Both forms place the entry point in `/usr/local/bin/docker-assemble`.
+
 ## Requirements
 
 - Python 3.8+
