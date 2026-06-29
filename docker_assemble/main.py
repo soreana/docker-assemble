@@ -19,6 +19,12 @@ def run():
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--maximum-file-size", type=str, help="Maximum file size (e.g., 1G, 100M, 10K). Files larger than this size will be listed.")
     parser.add_argument("--new-image-name", type=str, help="Name for the new Docker image after removing files.")
+    parser.add_argument(
+        "--no-extract",
+        action="store_true",
+        help="Skip extracting the filesystem to disk. Only valid when --new-image-name "
+             "is set and --maximum-file-size is not (the streaming rebuild needs no on-disk files).",
+    )
     parser.add_argument("image", help="Docker image name")
     parser.add_argument("output_dir", nargs="?", default=".", help="Optional output directory")
 
@@ -26,8 +32,17 @@ def run():
 
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
 
-    logging.debug(f"Extracting image: {args.image} to directory: {args.output_dir}")
-    image_exporter.extract_image(image_name=args.image, output_dir=args.output_dir)
+    if args.no_extract and (not args.new_image_name or args.maximum_file_size):
+        parser.error(
+            "--no-extract requires --new-image-name and is incompatible with "
+            "--maximum-file-size (file filtering needs the extracted filesystem)."
+        )
+
+    if args.no_extract:
+        logging.debug("Skipping on-disk extraction (--no-extract).")
+    else:
+        logging.debug(f"Extracting image: {args.image} to directory: {args.output_dir}")
+        image_exporter.extract_image(image_name=args.image, output_dir=args.output_dir)
 
     removed_files = []
     if args.maximum_file_size:

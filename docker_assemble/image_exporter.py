@@ -2,6 +2,7 @@ import docker
 import tarfile
 import tempfile
 import os
+import json
 from pathlib import Path
 import logging
 import io
@@ -18,16 +19,47 @@ def get_or_pull_image_and_export_fs(client, image_name):
     container = client.containers.run(image=image_name, command="sleep infinity", detach=True)
     logging.debug(f"Created temporary container: {container.id[:12]}")
 
+    tmp_tar_path = None
     try:
         stream, _ = container.get_archive("/")
         tmp_tar_path = tempfile.mktemp(suffix=".tar")
-        with open(tmp_tar_path, "wb") as f:
-            for chunk in stream:
-                f.write(chunk)
+        try:
+            with open(tmp_tar_path, "wb") as f:
+                for chunk in stream:
+                    f.write(chunk)
+        finally:
+            # Ensure the daemon-backed stream is released even on a partial
+            # write (e.g. disk full) rather than waiting for GC.
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
         return container, tmp_tar_path
     except Exception as e:
         container.remove(force=True)
+        if tmp_tar_path is not None and os.path.exists(tmp_tar_path):
+            os.remove(tmp_tar_path)
         raise e
+
+
+def _cleanup_container_and_tar(container, tmp_tar_path):
+    """Best-effort cleanup that never raises, so it cannot mask the original
+    exception when invoked from a finally block."""
+    if container is not None:
+        try:
+            container.remove(force=True)
+        except Exception:
+            logging.warning(
+                "Failed to remove temporary container during cleanup", exc_info=True
+            )
+    if tmp_tar_path is not None and os.path.exists(tmp_tar_path):
+        try:
+            os.remove(tmp_tar_path)
+        except OSError:
+            logging.warning(
+                f"Failed to remove temporary tar {tmp_tar_path} during cleanup",
+                exc_info=True,
+            )
+    logging.debug("Cleaned up temporary container and tar file.")
 
 
 def extract_image(image_name: str, output_dir: str):
@@ -47,10 +79,7 @@ def extract_image(image_name: str, output_dir: str):
         logging.info(f"Image filesystem extracted to: {output_path}")
 
     finally:
-        container.remove(force=True)
-        if os.path.exists(tmp_tar_path):
-            os.remove(tmp_tar_path)
-        logging.debug("Cleaned up temporary container and tar file.")
+        _cleanup_container_and_tar(container, tmp_tar_path)
 
 
 def extract_tar_safely(tar_path: str, output_path: Path):
@@ -61,17 +90,43 @@ def extract_tar_safely(tar_path: str, output_path: Path):
     #         # For Python < 3.9 fallback
     #         return str(target.resolve()).startswith(str(base.resolve()))
 
+    # Two-pass extraction so read-only directory modes don't block writing the
+    # files inside them. tarfile applies each directory's mode the moment it is
+    # extracted, so a restrictive dir (e.g. 0o555 on UBI/RHEL rootfs) makes the
+    # next file member inside it fail with PermissionError. We extract every
+    # directory with a temporarily writable mode, then restore the original
+    # modes in a second pass (deepest-first, so tightening a parent never blocks
+    # restoring a child).
+    dir_modes = {}
+
     with tarfile.open(tar_path, "r") as tar:
         for member in tar.getmembers():
             member.name = member.name.lstrip("/")
-            member_path = output_path / member.name
+            if not member.name:
+                continue
 
+            # member_path = output_path / member.name
             # if not is_safe_path(output_path, member_path):
             #     logging.warning(f"Blocked unsafe path: {member.name}, output_path: {output_path}, member_path: {member_path}")
             #     continue
 
+            if member.isdir():
+                dir_modes[member.name] = member.mode
+                # Force a writable+traversable mode for the duration of the
+                # extraction; the original mode is restored below.
+                member.mode = 0o755
+
             tar.extract(member, path=output_path)
             logging.debug(f"Extracted: {member.name}")
+
+    # Restore directory modes deepest-first so a parent that becomes read-only
+    # is only tightened after all of its children have been handled.
+    for name in sorted(dir_modes, key=lambda n: n.count("/"), reverse=True):
+        dir_path = output_path / name
+        try:
+            os.chmod(dir_path, dir_modes[name])
+        except OSError as e:
+            logging.debug(f"Could not restore mode on {dir_path}: {e}")
 
     logging.info(f"Extraction completed to: {output_path}")
 
@@ -148,7 +203,11 @@ def filter_tar_and_inject_dockerfile(original_tar_path, dockerfile_content, filt
                     continue
 
                 file_obj = old_tar.extractfile(member) if member.isfile() else None
-                new_tar.addfile(member, file_obj)
+                try:
+                    new_tar.addfile(member, file_obj)
+                finally:
+                    if file_obj is not None:
+                        file_obj.close()
 
             # Inject Dockerfile
             dockerfile_data = dockerfile_content.encode("utf-8")
@@ -160,12 +219,103 @@ def filter_tar_and_inject_dockerfile(original_tar_path, dockerfile_content, filt
     return buffer
 
 
+def _split_repository_tag(image_name):
+    """Split 'repo:tag' into (repository, tag), defaulting tag to 'latest'.
+    Only the last path component may carry a tag, so a registry port
+    (e.g. 'localhost:5000/img') is not mistaken for a tag."""
+    repository, sep, tag = image_name.rpartition(":")
+    if sep and "/" not in tag:
+        return repository, tag
+    return image_name, "latest"
+
+
+def image_config_to_changes(client, image_name):
+    """Translate the original image's runtime config into Dockerfile-style
+    ``--change`` directives so an imported image keeps CMD/ENTRYPOINT/ENV/etc.
+
+    ``docker import`` produces a config-less image; passing these ``changes``
+    to the import call restores the metadata that the streaming fast-path would
+    otherwise drop."""
+    config = client.images.get(image_name).attrs.get("Config") or {}
+    changes = []
+
+    for env in config.get("Env") or []:
+        changes.append(f"ENV {env}")
+
+    workdir = config.get("WorkingDir")
+    if workdir:
+        changes.append(f"WORKDIR {workdir}")
+
+    user = config.get("User")
+    if user:
+        changes.append(f"USER {user}")
+
+    for port in (config.get("ExposedPorts") or {}):
+        changes.append(f"EXPOSE {port}")
+
+    for volume in (config.get("Volumes") or {}):
+        changes.append(f"VOLUME {volume}")
+
+    for key, value in (config.get("Labels") or {}).items():
+        changes.append(f"LABEL {json.dumps(key)}={json.dumps(value)}")
+
+    entrypoint = config.get("Entrypoint")
+    if entrypoint:
+        changes.append(f"ENTRYPOINT {json.dumps(entrypoint)}")
+
+    cmd = config.get("Cmd")
+    if cmd:
+        changes.append(f"CMD {json.dumps(cmd)}")
+
+    return changes
+
+
+def rebuild_via_export_import(client, image_name, new_image_name):
+    """Fast-path rebuild for the no-filter case: stream the container's
+    filesystem straight from ``docker export`` into ``docker import`` without
+    ever touching disk or running ``tar.extract``. Runtime metadata from the
+    source image is preserved via ``changes``."""
+    repository, tag = _split_repository_tag(new_image_name)
+    changes = image_config_to_changes(client, image_name)
+
+    container = None
+    try:
+        # create (not run) is enough to export the filesystem and avoids
+        # spawning a 'sleep infinity' process we would have to reap.
+        container = client.containers.create(image=image_name)
+        logging.debug(f"Created temporary container: {container.id[:12]}")
+
+        export_stream = client.api.export(container.id)
+        client.api.import_image(
+            src=export_stream,
+            repository=repository,
+            tag=tag,
+            changes=changes,
+            stream_src=True,
+        )
+        logging.info(
+            f"New image successfully created via export|import: {new_image_name}"
+        )
+    finally:
+        _cleanup_container_and_tar(container, None)
+
+
 def create_new_image(image_name, new_image_name, removed_files):
+    client = docker.from_env()
+
+    # No files to filter out -> use the streaming export|import fast-path.
+    if not removed_files:
+        logging.info(
+            f"Creating new image '{new_image_name}' from '{image_name}' "
+            f"via streaming export|import (no filtering requested)."
+        )
+        rebuild_via_export_import(client, image_name, new_image_name)
+        return
+
     container = None
     tmp_tar_path = None
     try:
         logging.info(f"Creating new image '{new_image_name}' from '{image_name}' with filtered files.")
-        client = docker.from_env()
         container, tmp_tar_path = get_or_pull_image_and_export_fs(client, image_name)
 
         logging.debug(f"Extraction complete. Archive saved at {tmp_tar_path}")
@@ -196,7 +346,4 @@ def create_new_image(image_name, new_image_name, removed_files):
         logging.info(f"New image successfully created: {new_image_name}")
 
     finally:
-        container.remove(force=True)
-        if os.path.exists(tmp_tar_path):
-            os.remove(tmp_tar_path)
-        logging.debug("Cleaned up temporary container and tar file.")
+        _cleanup_container_and_tar(container, tmp_tar_path)

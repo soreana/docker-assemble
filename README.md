@@ -17,6 +17,12 @@ It helps developers, researchers, and DevOps engineers understand what is inside
 - Rebuild a new Docker image from the filtered filesystem
 - Simple command-line interface built with Python
 
+## What's new in 0.6.0
+
+- **Streaming fast-path rebuild.** When `--maximum-file-size` is not set, image rebuilds now stream `docker export` → `docker import` instead of writing a temp tar and running `docker build`. Much faster on large images, and runtime metadata (`CMD`, `ENTRYPOINT`, `ENV`, `WORKDIR`, `USER`, `EXPOSE`, `VOLUME`, `LABEL`) is now carried into the rebuilt image. Previous versions rebuilt via `FROM scratch` + `COPY . /`, which dropped this metadata.
+- **New `--no-extract` flag** to skip on-disk extraction when you only want the rebuilt image (requires `--new-image-name`; incompatible with `--maximum-file-size`).
+- **Bug fixes:** extraction no longer fails with `PermissionError` on read-only directories (UBI/RHEL rootfs); errors during rebuild/extraction no longer leak the temporary `sleep infinity` container or get masked by an `AttributeError` in cleanup.
+
 ## Why use docker-assemble?
 
 Docker images can contain unnecessary files, large artifacts, cached dependencies, logs, build leftovers, or other filesystem content that increases image size. `docker-assemble` makes it easier to inspect the full filesystem of an image and understand what contributes to its size.
@@ -125,6 +131,8 @@ Pass `--new-image-name` to rebuild the extracted filesystem as a single-layer im
     --new-image-name ubuntu-squashed
   ```
 
+  In this no-filter case `docker-assemble` uses a **streaming fast-path**: it pipes the container filesystem straight from `docker export` into `docker import`, never writing an intermediate tar to disk or extracting files one by one. This is substantially faster on large images and avoids filesystem-level surprises (e.g. read-only directories on UBI/RHEL rootfs). Runtime metadata from the source image (`CMD`, `ENTRYPOINT`, `ENV`, `WORKDIR`, `USER`, `EXPOSE`, `VOLUME`, `LABEL`) is carried over to the rebuilt image.
+
 - **With `--maximum-file-size`** — `docker-assemble` lists files above the threshold, asks which should be removed, and rebuilds the image without them:
 
   ```bash
@@ -132,6 +140,20 @@ Pass `--new-image-name` to rebuild the extracted filesystem as a single-layer im
     --maximum-file-size 100M \
     --new-image-name ubuntu-optimized
   ```
+
+  When files are filtered out, the fast-path cannot be used (individual members must be inspected), so `docker-assemble` falls back to exporting, filtering, and rebuilding via `docker build`.
+
+### Skipping on-disk extraction (`--no-extract`)
+
+By default `docker-assemble` extracts the filesystem to `output_dir` even when you only want a rebuilt image. If you only need the rebuilt image, add `--no-extract` to skip the disk extraction entirely and rebuild straight from the streaming fast-path. Since nothing is written to disk, the `output_dir` argument can be omitted:
+
+```bash
+docker-assemble -d ubuntu:20.04 \
+  --new-image-name ubuntu-squashed \
+  --no-extract
+```
+
+`--no-extract` requires `--new-image-name` and is incompatible with `--maximum-file-size` (file filtering needs the extracted filesystem).
 
 ## Package
 
@@ -180,7 +202,14 @@ docker-assemble -d python:3.11 python-image-filesystem \
 
 ## How it works
 
-`docker-assemble` uses the Docker SDK for Python to access Docker images. If the requested image is not available locally, it pulls the image. It then creates a temporary container, exports the container filesystem, extracts it into the selected output directory, and optionally rebuilds a new image from a filtered filesystem.
+`docker-assemble` uses the Docker SDK for Python to access Docker images. If the requested image is not available locally, it pulls the image. It then creates a temporary container, exports the container filesystem, extracts it into the selected output directory, and optionally rebuilds a new image.
+
+There are two rebuild paths:
+
+- **Streaming fast-path** (no `--maximum-file-size`): the container filesystem is piped from `docker export` directly into `docker import`. No on-disk tar, no per-file extraction, no `tar.extract` permission edge cases. Source-image runtime config (`CMD`, `ENTRYPOINT`, `ENV`, `WORKDIR`, `USER`, `EXPOSE`, `VOLUME`, `LABEL`) is reapplied to the rebuilt image via import `changes`.
+- **Filter-and-build path** (with `--maximum-file-size`): the filesystem tar is filtered member-by-member to drop selected files, then rebuilt with `docker build` (`FROM scratch` + `COPY . /`).
+
+> **Note on metadata preservation:** the fast-path reapplies the common runtime config keys listed above. It does not reproduce non-config image attributes such as `HEALTHCHECK`, `STOPSIGNAL`, `SHELL`, or `ONBUILD`, and — like any `docker import`/`FROM scratch` rebuild — it produces a fresh single-layer image with new history. If you need a byte-for-byte faithful image config, rebuild from the original `Dockerfile` instead.
 
 ## Project status
 
