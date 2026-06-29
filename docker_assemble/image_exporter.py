@@ -8,13 +8,18 @@ import logging
 import io
 
 
-def get_or_pull_image_and_export_fs(client, image_name):
+def ensure_image_present(client, image_name):
+    """Make sure the image exists locally, pulling it if necessary."""
     try:
         client.images.get(image_name)
         logging.info(f"Image '{image_name}' found locally.")
     except docker.errors.ImageNotFound:
         logging.info(f"Image '{image_name}' not found locally. Pulling...")
         client.images.pull(image_name)
+
+
+def get_or_pull_image_and_export_fs(client, image_name):
+    ensure_image_present(client, image_name)
 
     container = client.containers.run(image=image_name, command="sleep infinity", detach=True)
     logging.debug(f"Created temporary container: {container.id[:12]}")
@@ -275,6 +280,8 @@ def rebuild_via_export_import(client, image_name, new_image_name):
     filesystem straight from ``docker export`` into ``docker import`` without
     ever touching disk or running ``tar.extract``. Runtime metadata from the
     source image is preserved via ``changes``."""
+    ensure_image_present(client, image_name)
+
     repository, tag = _split_repository_tag(new_image_name)
     changes = image_config_to_changes(client, image_name)
 
