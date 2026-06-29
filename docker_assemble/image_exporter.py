@@ -288,8 +288,12 @@ def rebuild_via_export_import(client, image_name, new_image_name):
     container = None
     try:
         # create (not run) is enough to export the filesystem and avoids
-        # spawning a 'sleep infinity' process we would have to reap.
-        container = client.containers.create(image=image_name)
+        # spawning a 'sleep infinity' process we would have to reap. A command
+        # must still be supplied: the daemon validates one at create time, and
+        # images with an empty Cmd/Entrypoint (cosign artifacts, FROM scratch)
+        # otherwise fail with 400 "no command specified". The container is never
+        # started, so the command never runs.
+        container = client.containers.create(image=image_name, command="sleep infinity")
         logging.debug(f"Created temporary container: {container.id[:12]}")
 
         export_stream = client.api.export(container.id)
