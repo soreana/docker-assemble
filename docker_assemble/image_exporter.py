@@ -8,6 +8,44 @@ import logging
 import io
 
 
+class UnsupportedImageError(Exception):
+    """Raised when a reference is not a runnable image and therefore cannot be
+    disassembled or rebuilt — e.g. an OCI artifact such as a cosign signature
+    (.sig), attestation (.att), or SBOM (.sbom). These have no valid root
+    filesystem, so the daemon rejects container creation."""
+
+
+# Substrings the Docker daemon returns when a "image" is really an OCI artifact
+# (cosign signature/attestation/SBOM) with no usable rootfs.
+_NOT_RUNNABLE_DAEMON_ERRORS = (
+    "mismatched image rootfs and manifest layers",
+)
+
+
+def _is_not_runnable_image_error(error):
+    explanation = getattr(error, "explanation", None) or str(error)
+    return any(marker in explanation for marker in _NOT_RUNNABLE_DAEMON_ERRORS)
+
+
+def create_temp_container(client, image_name):
+    """Create a stopped temporary container for export, translating the daemon's
+    'not a runnable image' failure into a clean UnsupportedImageError.
+
+    A command must be supplied even though the container is never started: the
+    daemon validates one at create time, so images with an empty Cmd/Entrypoint
+    would otherwise fail with 400 'no command specified'."""
+    try:
+        return client.containers.create(image=image_name, command="sleep infinity")
+    except docker.errors.APIError as e:
+        if _is_not_runnable_image_error(e):
+            raise UnsupportedImageError(
+                f"'{image_name}' is not a runnable image (it looks like an OCI "
+                f"artifact such as a cosign signature/attestation/SBOM); it has no "
+                f"filesystem to disassemble or rebuild."
+            ) from e
+        raise
+
+
 def ensure_image_present(client, image_name):
     """Make sure the image exists locally, pulling it if necessary."""
     try:
@@ -21,7 +59,7 @@ def ensure_image_present(client, image_name):
 def get_or_pull_image_and_export_fs(client, image_name):
     ensure_image_present(client, image_name)
 
-    container = client.containers.run(image=image_name, command="sleep infinity", detach=True)
+    container = create_temp_container(client, image_name)
     logging.debug(f"Created temporary container: {container.id[:12]}")
 
     tmp_tar_path = None
@@ -288,12 +326,8 @@ def rebuild_via_export_import(client, image_name, new_image_name):
     container = None
     try:
         # create (not run) is enough to export the filesystem and avoids
-        # spawning a 'sleep infinity' process we would have to reap. A command
-        # must still be supplied: the daemon validates one at create time, and
-        # images with an empty Cmd/Entrypoint (cosign artifacts, FROM scratch)
-        # otherwise fail with 400 "no command specified". The container is never
-        # started, so the command never runs.
-        container = client.containers.create(image=image_name, command="sleep infinity")
+        # spawning a 'sleep infinity' process we would have to reap.
+        container = create_temp_container(client, image_name)
         logging.debug(f"Created temporary container: {container.id[:12]}")
 
         export_stream = client.api.export(container.id)

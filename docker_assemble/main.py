@@ -1,5 +1,6 @@
 import argparse
 import logging
+import sys
 import docker_assemble.image_exporter as image_exporter
 
 
@@ -38,19 +39,26 @@ def run():
             "--maximum-file-size (file filtering needs the extracted filesystem)."
         )
 
-    if args.no_extract:
-        logging.debug("Skipping on-disk extraction (--no-extract).")
-    else:
-        logging.debug(f"Extracting image: {args.image} to directory: {args.output_dir}")
-        image_exporter.extract_image(image_name=args.image, output_dir=args.output_dir)
+    try:
+        if args.no_extract:
+            logging.debug("Skipping on-disk extraction (--no-extract).")
+        else:
+            logging.debug(f"Extracting image: {args.image} to directory: {args.output_dir}")
+            image_exporter.extract_image(image_name=args.image, output_dir=args.output_dir)
 
-    removed_files = []
-    if args.maximum_file_size:
-        max_size_bytes = parse_size(args.maximum_file_size)
-        large_files = image_exporter.check_large_files(args.output_dir, max_size_bytes)
+        removed_files = []
+        if args.maximum_file_size:
+            max_size_bytes = parse_size(args.maximum_file_size)
+            large_files = image_exporter.check_large_files(args.output_dir, max_size_bytes)
 
-        if large_files:
-            removed_files = image_exporter.remove_files(large_files)
+            if large_files:
+                removed_files = image_exporter.remove_files(large_files)
 
-    if args.new_image_name:
-        image_exporter.create_new_image(args.image, args.new_image_name, removed_files)
+        if args.new_image_name:
+            image_exporter.create_new_image(args.image, args.new_image_name, removed_files)
+    except image_exporter.UnsupportedImageError as e:
+        # Not a failure: the reference is an OCI artifact (cosign signature, etc.)
+        # with no filesystem. Report cleanly and exit 0 so batch callers don't
+        # treat expected sidecar tags as errors.
+        logging.warning(f"Skipping {args.image}: {e}")
+        sys.exit(0)
