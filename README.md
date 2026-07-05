@@ -165,6 +165,14 @@ pip install docker-assemble
 
 PyPI: https://pypi.org/project/docker-assemble/
 
+## Version
+
+Check which version is installed (useful when confirming what's running on a remote host):
+
+```bash
+docker-assemble --version
+```
+
 ## Debug mode
 
 Enable debug logging with:

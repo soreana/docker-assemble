@@ -1,7 +1,18 @@
 import argparse
 import logging
 import sys
+from importlib.metadata import version, PackageNotFoundError
 import docker_assemble.image_exporter as image_exporter
+
+
+def get_version():
+    """Report the installed distribution version (baked in at build time by
+    setuptools_scm). Falls back gracefully when running from an uninstalled
+    source checkout."""
+    try:
+        return version("docker-assemble")
+    except PackageNotFoundError:
+        return "unknown (running from source, not installed)"
 
 
 def parse_size(size_str):
@@ -16,6 +27,12 @@ def parse_size(size_str):
 
 def run():
     parser = argparse.ArgumentParser(description="Docker Assemble CLI")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {get_version()}",
+        help="Show the docker-assemble version and exit.",
+    )
     parser.add_argument("-d", action="store_true", help="Disassemble an image")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--maximum-file-size", type=str, help="Maximum file size (e.g., 1G, 100M, 10K). Files larger than this size will be listed.")
