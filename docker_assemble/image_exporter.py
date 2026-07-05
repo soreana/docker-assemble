@@ -15,6 +15,17 @@ class UnsupportedImageError(Exception):
     filesystem, so the daemon rejects container creation."""
 
 
+# Docker's default client read timeout (60s) is too low for streaming a large
+# image through export|import; big rootfs archives routinely exceed it. Use a
+# generous default, overridable via env var for very large images or slow hosts.
+_DEFAULT_CLIENT_TIMEOUT = int(os.environ.get("DOCKER_ASSEMBLE_CLIENT_TIMEOUT", "600"))
+
+
+def get_client():
+    """docker.from_env() with a timeout suited to large image transfers."""
+    return docker.from_env(timeout=_DEFAULT_CLIENT_TIMEOUT)
+
+
 # Substrings the Docker daemon returns when a "image" is really an OCI artifact
 # (cosign signature/attestation/SBOM) with no usable rootfs.
 _NOT_RUNNABLE_DAEMON_ERRORS = (
@@ -109,7 +120,7 @@ def extract_image(image_name: str, output_dir: str):
     container = None
     tmp_tar_path = None
     try:
-        client = docker.from_env()
+        client = get_client()
         container, tmp_tar_path = get_or_pull_image_and_export_fs(client, image_name)
 
         logging.debug(f"Filesystem archive saved to: {tmp_tar_path}")
@@ -313,11 +324,29 @@ def image_config_to_changes(client, image_name):
     return changes
 
 
+def _is_bad_changes_error(error):
+    """True when an import failed because the daemon could not parse the
+    Dockerfile-style ``changes`` strings (e.g. an ENV/LABEL value with spaces or
+    embedded quotes). Docker's --change tokenizer is fragile for arbitrary
+    metadata, so we detect this and retry without metadata."""
+    if not isinstance(error, docker.errors.APIError):
+        return False
+    status = getattr(getattr(error, "response", None), "status_code", None)
+    explanation = getattr(error, "explanation", None) or str(error)
+    return status == 400 and (
+        "Must be of the form: name=value" in explanation
+        or "Syntax error" in explanation
+    )
+
+
 def rebuild_via_export_import(client, image_name, new_image_name):
     """Fast-path rebuild for the no-filter case: stream the container's
     filesystem straight from ``docker export`` into ``docker import`` without
     ever touching disk or running ``tar.extract``. Runtime metadata from the
-    source image is preserved via ``changes``."""
+    source image is preserved via ``changes`` when the daemon accepts them; if a
+    metadata value can't be encoded as a valid ``--change`` directive, the
+    rebuild falls back to a config-less image rather than failing outright
+    (image size — the thing this tool measures — is unaffected by metadata)."""
     ensure_image_present(client, image_name)
 
     repository, tag = _split_repository_tag(new_image_name)
@@ -330,14 +359,30 @@ def rebuild_via_export_import(client, image_name, new_image_name):
         container = create_temp_container(client, image_name)
         logging.debug(f"Created temporary container: {container.id[:12]}")
 
-        export_stream = client.api.export(container.id)
-        client.api.import_image(
-            src=export_stream,
-            repository=repository,
-            tag=tag,
-            changes=changes,
-            stream_src=True,
-        )
+        try:
+            client.api.import_image(
+                src=client.api.export(container.id),
+                repository=repository,
+                tag=tag,
+                changes=changes,
+                stream_src=True,
+            )
+        except docker.errors.APIError as e:
+            if not (changes and _is_bad_changes_error(e)):
+                raise
+            logging.warning(
+                f"Image metadata could not be applied to '{new_image_name}' "
+                f"({getattr(e, 'explanation', e)}); rebuilding without metadata."
+            )
+            # The first export stream is spent; re-export from the same
+            # still-alive container and import without the offending changes.
+            client.api.import_image(
+                src=client.api.export(container.id),
+                repository=repository,
+                tag=tag,
+                stream_src=True,
+            )
+
         logging.info(
             f"New image successfully created via export|import: {new_image_name}"
         )
@@ -346,7 +391,7 @@ def rebuild_via_export_import(client, image_name, new_image_name):
 
 
 def create_new_image(image_name, new_image_name, removed_files):
-    client = docker.from_env()
+    client = get_client()
 
     # No files to filter out -> use the streaming export|import fast-path.
     if not removed_files:
