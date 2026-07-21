@@ -325,17 +325,29 @@ def image_config_to_changes(client, image_name):
 
 
 def _is_bad_changes_error(error):
-    """True when an import failed because the daemon could not parse the
-    Dockerfile-style ``changes`` strings (e.g. an ENV/LABEL value with spaces or
-    embedded quotes). Docker's --change tokenizer is fragile for arbitrary
-    metadata, so we detect this and retry without metadata."""
+    """True when an import failed because the daemon rejected the Dockerfile-style
+    ``changes`` — and the fix in every case is the same: retry without metadata so
+    the rebuild still succeeds. Covers two families:
+
+    - Unparseable directives: Docker's --change tokenizer is fragile for
+      arbitrary metadata (ENV/LABEL values with spaces or embedded quotes).
+    - Daemon hard limits: a single directive over 65535 bytes (e.g. an SBOM
+      stuffed into one LABEL) or too many ``changes=`` URL query params (images
+      with hundreds of labels). We can't reliably pre-check these — the byte cap
+      is on the decoded line while the param cap is on the percent-encoded URL —
+      so we react to the daemon's own error instead of guessing thresholds."""
     if not isinstance(error, docker.errors.APIError):
         return False
     status = getattr(getattr(error, "response", None), "status_code", None)
     explanation = getattr(error, "explanation", None) or str(error)
-    return status == 400 and (
-        "Must be of the form: name=value" in explanation
-        or "Syntax error" in explanation
+    return status == 400 and any(
+        marker in explanation
+        for marker in (
+            "Must be of the form: name=value",
+            "Syntax error",
+            "greater than max allowed size",         # oversized single --change
+            "number of URL query parameters exceeded",  # too many changes= params
+        )
     )
 
 

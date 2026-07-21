@@ -82,6 +82,38 @@ sudo PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install docker-assembl
 
 Both forms place the entry point in `/usr/local/bin/docker-assemble`.
 
+### Running as another user / over SSH
+
+If you installed `docker-assemble` into a single user's home directory (for example
+with `pip install --user`, which lands in `~/.local/bin`), other users — including
+SSH sessions and automation accounts — won't find it on their `PATH`.
+
+**Recommended fix:** don't rely on a per-user install for shared use. Reinstall with
+one of the system-wide options above (the `/opt` venv + symlink in Option 1 is the
+simplest). Because it symlinks into `/usr/local/bin`, every user with that directory
+on their `PATH` can run `docker-assemble`, and it keeps working even if the original
+installing user is removed.
+
+**Last-resort fallback:** if you cannot redo the install as system-wide, you can add a
+small wrapper in `/usr/local/bin` that points at the per-user binary:
+
+```sh
+#!/bin/sh
+exec /home/<user>/.local/bin/docker-assemble "$@"
+```
+
+```bash
+sudo tee /usr/local/bin/docker-assemble >/dev/null <<'EOF'
+#!/bin/sh
+exec /home/<user>/.local/bin/docker-assemble "$@"
+EOF
+sudo chmod +x /usr/local/bin/docker-assemble
+```
+
+Use this only when a system-wide reinstall isn't possible. It hardcodes one user's
+home directory, so it breaks if that user or their install is removed — prefer the
+`/opt` symlink whenever you can.
+
 ## Requirements
 
 - Python 3.8+
@@ -218,6 +250,8 @@ There are two rebuild paths:
 - **Filter-and-build path** (with `--maximum-file-size`): the filesystem tar is filtered member-by-member to drop selected files, then rebuilt with `docker build` (`FROM scratch` + `COPY . /`).
 
 > **Note on metadata preservation:** the fast-path reapplies the common runtime config keys listed above. It does not reproduce non-config image attributes such as `HEALTHCHECK`, `STOPSIGNAL`, `SHELL`, or `ONBUILD`, and — like any `docker import`/`FROM scratch` rebuild — it produces a fresh single-layer image with new history. If you need a byte-for-byte faithful image config, rebuild from the original `Dockerfile` instead.
+>
+> **Oversized or excessive metadata:** the Docker daemon caps a single `--change` directive at 65,535 bytes and limits the total number of `changes=` parameters per import. Some images breach these — e.g. an entire SBOM or package inventory stuffed into one `org.opencontainers.image.*` label, or images with many hundreds of labels. When the daemon rejects the metadata for any reason (an unparseable value, an oversized directive, or too many directives), `docker-assemble` logs a `WARNING` and retries the import **without** metadata, so the rebuild still succeeds and the filesystem is unaffected — only the runtime metadata is lost for that image.
 
 ## Project status
 
