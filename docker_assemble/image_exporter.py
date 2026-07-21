@@ -294,11 +294,16 @@ def image_config_to_changes(client, image_name):
     changes = []
 
     for env in config.get("Env") or []:
-        changes.append(f"ENV {env}")
+        # Env entries are KEY=VALUE. The value may contain literal Dockerfile
+        # metacharacters (an unmatched quote, spaces, ``$``) that the daemon's
+        # parser would choke on if passed raw. json.dumps wraps it as a
+        # double-quoted string with internal ``"`` and ``\`` escaped.
+        key, _, value = env.partition("=")
+        changes.append(f"ENV {key}={json.dumps(value)}")
 
     workdir = config.get("WorkingDir")
     if workdir:
-        changes.append(f"WORKDIR {workdir}")
+        changes.append(f"WORKDIR {json.dumps(workdir)}")
 
     user = config.get("User")
     if user:
@@ -345,6 +350,7 @@ def _is_bad_changes_error(error):
         for marker in (
             "Must be of the form: name=value",
             "Syntax error",
+            "unexpected end of statement",           # unbalanced quote in a value
             "greater than max allowed size",         # oversized single --change
             "number of URL query parameters exceeded",  # too many changes= params
         )
