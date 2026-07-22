@@ -307,13 +307,18 @@ def image_config_to_changes(client, image_name):
 
     user = config.get("User")
     if user:
-        changes.append(f"USER {user}")
+        changes.append(f"USER {json.dumps(user)}")
 
     for port in (config.get("ExposedPorts") or {}):
+        # ExposedPorts keys are a validated port grammar ("80/tcp") that can't
+        # contain metacharacters, so they need no quoting.
         changes.append(f"EXPOSE {port}")
 
     for volume in (config.get("Volumes") or {}):
-        changes.append(f"VOLUME {volume}")
+        # Volume paths are author-controlled and may look like flags
+        # (e.g. "--name=x") or contain spaces; quote so the parser treats the
+        # whole value as VOLUME's argument, not a directive flag.
+        changes.append(f"VOLUME {json.dumps(volume)}")
 
     for key, value in (config.get("Labels") or {}).items():
         changes.append(f"LABEL {json.dumps(key)}={json.dumps(value)}")
@@ -351,6 +356,7 @@ def _is_bad_changes_error(error):
             "Must be of the form: name=value",
             "Syntax error",
             "unexpected end of statement",           # unbalanced quote in a value
+            "requires at least one argument",        # value parsed away as a flag
             "greater than max allowed size",         # oversized single --change
             "number of URL query parameters exceeded",  # too many changes= params
         )
